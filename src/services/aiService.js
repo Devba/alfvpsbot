@@ -5,6 +5,7 @@ import { config } from '../config/config.js';
 
 import { toolService } from './toolService.js';
 import { botInstance } from '../bot/telegramBot.js';
+import * as db from '../database/database.js';
 
 class AIService {
   constructor() {
@@ -120,22 +121,91 @@ class AIService {
             required: ['url', 'accion']
           }
         }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'guardar_memoria',
+          description: 'Guarda información importante a largo plazo (preferencias, identidad, configuraciones). NO la uses para charlas triviales.',
+          parameters: {
+            type: 'object',
+            properties: {
+              categoria: { type: 'string', description: 'Categoría (ej: identidad, preferencias, proyecto, error_solucionado).' },
+              contenido: { type: 'string', description: 'El dato detallado a recordar.' },
+              importancia: { type: 'integer', minimum: 1, maximum: 5, description: 'Prioridad del 1 al 5 (5 es crítica).' }
+            },
+            required: ['categoria', 'contenido']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'consultar_memoria',
+          description: 'Busca información guardada en la memoria a largo plazo.',
+          parameters: {
+            type: 'object',
+            properties: {
+              busqueda: { type: 'string', description: 'Término o categoría a buscar.' }
+            },
+            required: ['busqueda']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'olvidar_memoria',
+          description: 'Elimina una memoria específica por su ID si ya no es válida.',
+          parameters: {
+            type: 'object',
+            properties: {
+              id: { type: 'integer', description: 'ID de la memoria a eliminar.' }
+            },
+            required: ['id']
+          }
+        }
       }
     ];
   }
 
   async getChatCompletion(userId, userMessage, history = []) {
+    const useAnthropic = userMessage.toLowerCase().includes('usaanthrop');
+
+    // 🧠 Inyección de Identidad (Skill 6)
+    const identityMemories = db.getIdentityMemories();
+    let identityPrompt = '';
+    if (identityMemories.length > 0) {
+      identityPrompt = '\n\n[CONTEXTO DE MEMORIA (Identidad/Preferencias)]:\n' + 
+        identityMemories.map(m => `- ${m.category}: ${m.content}`).join('\n');
+    }
+
+    const systemPromptWithMemories = config.systemPrompt + identityPrompt + 
+      '\n\nREGLA CRÍTICA DE MEMORIA: Si detectas información nueva que contradice o complementa tus conocimientos guardados, usa "consultar_memoria" antes de decidir si guardar o actualizar datos.';
+
+    const isGroqDirect = config.aiBaseUrl.includes('groq.com');
+    const client = useAnthropic ? this.client : (isGroqDirect ? new OpenAI({ apiKey: config.aiApiKey, baseURL: config.aiBaseUrl }) : this.client);
+    const model = useAnthropic ? config.primaryModel : config.secondaryModel;
+
+    console.log(`🤖 [IA] Consultando proveedor ${useAnthropic ? 'Principal' : 'Económico'} (${model})...`);
+
     try {
+      // Prompt optimizado para Llama 3 si se usa Groq directo
+      let finalSystemPrompt = systemPromptWithMemories;
+      if (!useAnthropic && isGroqDirect) {
+        finalSystemPrompt += '\n\nIMPORTANTE: Para usar tus herramientas, utiliza el formato JSON nativo de tool_calls. No inventes formatos de texto.';
+      }
+
       let messages = [
-        { role: 'system', content: config.systemPrompt },
+        { role: 'system', content: finalSystemPrompt },
         ...history,
         { role: 'user', content: userMessage },
       ];
 
-      // Primera llamada a la IA (Primario)
-      console.log(`🤖 [IA] Consultando proveedor principal (${config.primaryModel})...`);
-      let response = await this.client.chat.completions.create({
-        model: config.primaryModel,
+      // Primera llamada
+      console.log(`📡 [IA] Enviando ${this.tools.length} herramientas a ${model}...`);
+      let response = await client.chat.completions.create({
+        model: model,
         messages: messages,
         tools: this.tools,
         tool_choice: 'auto'
@@ -143,11 +213,10 @@ class AIService {
 
       let responseMessage = response.choices[0].message;
 
-      // Si la IA quiere usar herramientas
+      // Bucle de herramientas (Solo si hay tool_calls y es el ADMIN)
       if (responseMessage.tool_calls) {
-        // Solo permitir herramientas al ADMIN
         if (userId !== config.adminUserId) {
-          return '🚫 Lo siento, no tienes permisos para ejecutar acciones de sistema en este VPS.';
+          return '🚫 Lo siento, no tienes permisos para ejecutar acciones de sistema.';
         }
 
         messages.push(responseMessage);
@@ -156,7 +225,7 @@ class AIService {
           const functionName = toolCall.function.name;
           const functionArgs = JSON.parse(toolCall.function.arguments);
           
-          console.log(`🛠️ [TOOL] Usando herramienta: ${functionName}`);
+          console.log(`🛠️ [${model}] Usando herramienta: ${functionName}`);
           try {
             const toolResponse = await toolService[functionName](functionArgs, { userId });
 
@@ -167,7 +236,7 @@ class AIService {
               content: toolResponse || 'Acción completada con éxito.',
             });
           } catch (toolError) {
-            console.error(`❌ Error ejecutando herramienta ${functionName}:`, toolError.message);
+            console.error(`❌ Error en herramienta ${functionName}:`, toolError.message);
             messages.push({
               tool_call_id: toolCall.id,
               role: 'tool',
@@ -177,9 +246,9 @@ class AIService {
           }
         }
 
-        // Segunda llamada para obtener la respuesta final basada en el resultado de la herramienta
-        const secondResponse = await this.client.chat.completions.create({
-          model: config.primaryModel,
+        // Segunda llamada con los resultados de las herramientas
+        const secondResponse = await client.chat.completions.create({
+          model: model,
           messages: messages,
         });
         
@@ -188,35 +257,8 @@ class AIService {
 
       return responseMessage.content;
     } catch (error) {
-      console.warn(`⚠️ Error en proveedor principal (${config.primaryModel}):`, error.message);
-      try {
-        // Fallback a Groq (Secundario)
-        console.warn(`⚠️ [IA] Proveedor principal falló. Cambiando a fallback: ${config.secondaryModel}`);
-        if (botInstance && userId) {
-          botInstance.sendMessage(userId, `⚠️ *Nota:* Usando modo de respaldo (${config.secondaryModel}). Las herramientas no estarán disponibles temporalmente.`, { parse_mode: 'Markdown' }).catch(() => {});
-        }
-
-        const groqClient = new OpenAI({
-          apiKey: config.aiApiKey,
-          baseURL: config.aiBaseUrl,
-        });
-
-        const fallbackMessages = [
-            { role: 'system', content: config.systemPrompt },
-            ...history,
-            { role: 'user', content: userMessage },
-        ];
-
-        const response = await groqClient.chat.completions.create({
-          model: config.secondaryModel,
-          messages: fallbackMessages,
-        });
-        
-        return response.choices[0].message.content;
-      } catch (fallbackError) {
-        console.error('❌ Error crítico en IA:', fallbackError.message);
-        throw fallbackError;
-      }
+      console.error(`❌ Error en ${model}:`, error.message);
+      return 'Lo siento, hubo un error al procesar tu solicitud con el modelo seleccionado.';
     }
   }
 }

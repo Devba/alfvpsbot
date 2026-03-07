@@ -133,13 +133,28 @@ export const toolService = {
     try {
       console.log(`🌐 [WEB] Navegando a ${url} (Acción: ${accion})...`);
       browser = await puppeteer.launch({
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+          '--no-sandbox', 
+          '--disable-setuid-sandbox',
+          '--disable-blink-features=AutomationControlled'
+        ]
       });
 
       const page = await browser.newPage();
       
+      // Configurar User-Agent real
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+      
+      // Configurar Viewport estándar
+      await page.setViewport({ width: 1920, height: 1080 });
+
+      // Ocultar webdriver (parche básico)
+      await page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      });
+
       // Timeout de 20 segundos para la carga
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
       if (accion === 'texto') {
         const text = await page.evaluate(() => {
@@ -170,6 +185,55 @@ export const toolService = {
       return msg;
     } finally {
       if (browser) await browser.close();
+    }
+  },
+
+  // --- Herramientas de Memoria (Skill 6 - RAG-Lite) ---
+
+  async guardar_memoria({ categoria, contenido, importancia = 3 }) {
+    try {
+      // Verificar duplicados (búsqueda parcial del contenido en la misma categoría)
+      const contentSnippet = contenido.slice(0, 50);
+      const existing = db.checkDuplicateMemory(categoria, contentSnippet);
+
+      if (existing) {
+        return `⚠️ Ya existe información similar en la categoría "${categoria}":\n"${existing.content}"\n\n¿Deseas que guarde esto de todas formas o prefieres borrar la anterior con olvidar_memoria(id: ${existing.id})?`;
+      }
+
+      const result = db.addMemory(categoria, contenido, importancia);
+      return `✅ Memoria guardada con éxito en la categoría "${categoria}" (ID: \${result.lastInsertRowid}, Importancia: \${importancia}).`;
+    } catch (error) {
+      return `❌ Error al guardar memoria: \${error.message}`;
+    }
+  },
+
+  async consultar_memoria({ busqueda }) {
+    try {
+      const results = db.searchMemories(busqueda);
+      if (results.length === 0) {
+        return `🔍 No se encontraron memorias que coincidan con "\${busqueda}".`;
+      }
+
+      let response = `🔍 Memorias encontradas para "\${busqueda}":\n\n`;
+      results.forEach(m => {
+        response += `[ID: \${m.id}] [\${m.category}] (Imp: \${m.importance}) \${m.content}\n---\n`;
+      });
+      return response;
+    } catch (error) {
+      return `❌ Error al consultar memoria: \${error.message}`;
+    }
+  },
+
+  async olvidar_memoria({ id }) {
+    try {
+      const result = db.deleteMemory(id);
+      if (result.changes > 0) {
+        return `🗑️ Memoria con ID \${id} eliminada correctamente.`;
+      } else {
+        return `⚠️ No se encontró ninguna memoria con el ID \${id}.`;
+      }
+    } catch (error) {
+      return `❌ Error al eliminar memoria: \${error.message}`;
     }
   }
 };
