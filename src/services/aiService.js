@@ -187,7 +187,7 @@ class AIService {
 
   async getChatCompletion(userId, userMessage, history = []) {
     // 🧠 Determinación de Modelo
-    let selectedModel = config.primaryModel;
+    let selectedModel = '@preset/open-gravity-primary';
     let finalMessage = userMessage;
 
     // Filtros de ruteo
