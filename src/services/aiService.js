@@ -18,6 +18,11 @@ class AIService {
       }
     });
 
+    this.groqClient = new OpenAI({
+      apiKey: config.aiApiKey,
+      baseURL: config.aiBaseUrl
+    });
+
     this.tools = [
       // ... (herramientas permanecen igual)
       {
@@ -169,97 +174,172 @@ class AIService {
     ];
   }
 
+  _getShortModelName(model) {
+    if (!model) return 'AI';
+    if (model.includes('gemma')) return 'Gem';
+    if (model.includes('step')) return 'Step';
+    if (model.includes('trinity')) return 'Trin';
+    if (model.includes('grok')) return 'Grok';
+    if (model.includes('minimax')) return 'Mini';
+    if (model.includes('llama')) return 'Llama';
+    return 'AI';
+  }
+
   async getChatCompletion(userId, userMessage, history = []) {
-    const useAnthropic = userMessage.toLowerCase().includes('usaanthrop');
+    // 🧠 Determinación de Modelo
+    let selectedModel = config.primaryModel;
+    let finalMessage = userMessage;
+
+    // Filtros de ruteo
+    const grokPrefixRegex = /^grok\s*[:\s-]/i;
+    const isForcedGrok = grokPrefixRegex.test(userMessage);
+    const isLongGeneration = /escribe|genera|crea|manual|guía|script|código extenso|resumen detallado/i.test(userMessage);
+    const isVisionTask = /captura|pantalla|mira|analiza imagen/i.test(userMessage);
+
+    if (isForcedGrok) {
+      selectedModel = config.backupModel;
+      // Eliminar el prefijo (ej: "Grok:", "Grok :", "Grok ") de forma limpia
+      finalMessage = userMessage.replace(grokPrefixRegex, '').trim();
+      console.log(`🎯 [Router] Forzando Grok por prefijo flexible.`);
+    } else if (isVisionTask) {
+      selectedModel = config.primaryModel; // Grok-3 soporta visión (ahora Gemma 3 también, pero preferimos el primario)
+    } else if (isLongGeneration) {
+      selectedModel = config.specialistModel; // Minimax para salida larga
+    }
 
     // 🧠 Inyección de Identidad (Skill 6)
     const identityMemories = db.getIdentityMemories();
     let identityPrompt = '';
     if (identityMemories.length > 0) {
-      identityPrompt = '\n\n[CONTEXTO DE MEMORIA (Identidad/Preferencias)]:\n' + 
+      identityPrompt = '\n\n[CONTEXTO DE MEMORIA (Identidad/Preferencias)]:\n' +
         identityMemories.map(m => `- ${m.category}: ${m.content}`).join('\n');
     }
 
-    const systemPromptWithMemories = config.systemPrompt + identityPrompt + 
+    const systemPromptWithMemories = config.systemPrompt + identityPrompt +
       '\n\nREGLA CRÍTICA DE MEMORIA: Si detectas información nueva que contradice o complementa tus conocimientos guardados, usa "consultar_memoria" antes de decidir si guardar o actualizar datos.';
 
-    const isGroqDirect = config.aiBaseUrl.includes('groq.com');
-    const client = useAnthropic ? this.client : (isGroqDirect ? new OpenAI({ apiKey: config.aiApiKey, baseURL: config.aiBaseUrl }) : this.client);
-    const model = useAnthropic ? config.primaryModel : config.secondaryModel;
+    const client = this.client; // Usar siempre OpenRouter para modelos primario/especialista
 
-    console.log(`🤖 [IA] Consultando proveedor ${useAnthropic ? 'Principal' : 'Económico'} (${model})...`);
+    return this._executeWithFailover(client, selectedModel, [
+      { role: 'system', content: systemPromptWithMemories },
+      ...history,
+      { role: 'user', content: finalMessage }
+    ], userId);
+  }
+
+  async _executeWithFailover(client, model, messages, userId) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 25000); // 25 segundos de timeout
 
     try {
-      // Prompt optimizado para Llama 3 si se usa Groq directo
-      let finalSystemPrompt = systemPromptWithMemories;
-      if (!useAnthropic && isGroqDirect) {
-        finalSystemPrompt += '\n\nIMPORTANTE: Para usar tus herramientas, utiliza el formato JSON nativo de tool_calls. No inventes formatos de texto.';
-      }
+      console.log(`🤖 [IA] Consultando ${model}...`);
 
-      let messages = [
-        { role: 'system', content: finalSystemPrompt },
-        ...history,
-        { role: 'user', content: userMessage },
-      ];
-
-      // Primera llamada
-      console.log(`📡 [IA] Enviando ${this.tools.length} herramientas a ${model}...`);
       let response = await client.chat.completions.create({
         model: model,
         messages: messages,
         tools: this.tools,
         tool_choice: 'auto'
-      });
+      }, { signal: controller.signal });
 
-      let responseMessage = response.choices[0].message;
+      clearTimeout(timeout);
+      const content = await this._processResponse(client, model, messages, response, userId);
+      return { content, model: this._getShortModelName(model) };
 
-      // Bucle de herramientas (Solo si hay tool_calls y es el ADMIN)
-      if (responseMessage.tool_calls) {
-        if (userId !== config.adminUserId) {
-          return '🚫 Lo siento, no tienes permisos para ejecutar acciones de sistema.';
+    } catch (error) {
+      clearTimeout(timeout);
+
+      const isTimeout = error.name === 'AbortError' || error.message?.includes('timeout');
+      const isFailoverError = isTimeout || error.status === 401 || error.status === 402 || error.status === 429 || error.status >= 500;
+
+      if (isFailoverError && model !== config.backupModel) {
+        const reason = isTimeout ? 'Timeout (25s)' : `Error ${error.status || 'desconocido'}`;
+        console.warn(`⚠️ ${reason} en ${model}. Saltando a Backup: ${config.backupModel}`);
+
+        if (botInstance && userId) {
+          const msg = isTimeout
+            ? '⚠️ *Nota:* El servidor gratuito está tardando demasiado. Saltando a Grok-4.1-Fast...'
+            : `⚠️ *Nota:* El servidor principal tuvo un problema (${reason}). Usando respaldo...`;
+          botInstance.sendMessage(userId, msg, { parse_mode: 'Markdown' }).catch(() => { });
         }
 
-        messages.push(responseMessage);
+        try {
+          const lastUserMessage = messages.findLast(m => m.role === 'user')?.content || '';
+          const isTrivial = /^(hola|hey|buenas|saludos|hi|hello)$/i.test(lastUserMessage.trim());
 
-        for (const toolCall of responseMessage.tool_calls) {
-          const functionName = toolCall.function.name;
-          const functionArgs = JSON.parse(toolCall.function.arguments);
-          
-          console.log(`🛠️ [${model}] Usando herramienta: ${functionName}`);
-          try {
-            const toolResponse = await toolService[functionName](functionArgs, { userId });
-
-            messages.push({
-              tool_call_id: toolCall.id,
-              role: 'tool',
-              name: functionName,
-              content: toolResponse || 'Acción completada con éxito.',
-            });
-          } catch (toolError) {
-            console.error(`❌ Error en herramienta ${functionName}:`, toolError.message);
-            messages.push({
-              tool_call_id: toolCall.id,
-              role: 'tool',
-              name: functionName,
-              content: `Error: ${toolError.message}`,
-            });
+          const backupMessages = [...messages];
+          if (backupMessages[0].role === 'system') {
+            backupMessages[0].content += '\n\nIMPORTANTE: Estás en modo de respaldo de ALTA PRIORIDAD. No escatimes en el uso de herramientas si es necesario.';
           }
-        }
 
-        // Segunda llamada con los resultados de las herramientas
-        const secondResponse = await client.chat.completions.create({
-          model: model,
-          messages: messages,
-        });
-        
-        return secondResponse.choices[0].message.content;
+          const backupOptions = {
+            model: config.backupModel,
+            messages: backupMessages
+          };
+
+          if (!isTrivial) {
+            backupOptions.tools = this.tools;
+            backupOptions.tool_choice = 'auto';
+          }
+
+          console.log(`🤖 [Backup] Consultando ${config.backupModel}...`);
+          const backupResponse = await this.groqClient.chat.completions.create(backupOptions);
+          const content = await this._processResponse(this.groqClient, config.backupModel, messages, backupResponse, userId);
+          return { content, model: this._getShortModelName(config.backupModel) };
+
+        } catch (backupError) {
+          console.error(`❌ Error crítico en Backup (${config.backupModel}):`, backupError.message);
+          return { content: 'Lo sentimos, tanto el modelo principal como el de respaldo han fallado. Por favor, intenta de nuevo más tarde.', model: 'Fail' };
+        }
       }
 
-      return responseMessage.content;
-    } catch (error) {
-      console.error(`❌ Error en ${model}:`, error.message);
-      return 'Lo siento, hubo un error al procesar tu solicitud con el modelo seleccionado.';
+      console.error(`❌ Error crítico en IA (${model}):`, error.message);
+      return { content: 'Lo siento, hubo un error crítico en el sistema de IA.', model: 'Error' };
     }
+  }
+
+  async _processResponse(client, model, messages, response, userId) {
+    const responseMessage = response.choices[0].message;
+
+    if (responseMessage.tool_calls) {
+      if (userId !== config.adminUserId) return '🚫 Sin permisos para herramientas.';
+
+      messages.push(responseMessage);
+
+      for (const toolCall of responseMessage.tool_calls) {
+        const functionName = toolCall.function.name;
+        const functionArgs = JSON.parse(toolCall.function.arguments);
+        console.log(`🛠️ [${model}] Usando herramienta: ${functionName}`);
+
+        try {
+          const toolResponse = await toolService[functionName](functionArgs, { userId });
+          messages.push({
+            tool_call_id: toolCall.id,
+            role: 'tool',
+            name: functionName,
+            content: toolResponse || 'Éxito.'
+          });
+        } catch (e) {
+          console.error(`❌ Error en herramienta ${functionName}:`, e.message);
+          messages.push({
+            tool_call_id: toolCall.id,
+            role: 'tool',
+            name: functionName,
+            content: `Error: ${e.message}`
+          });
+        }
+      }
+
+      const secondResponse = await client.chat.completions.create({
+        model: model,
+        messages: messages
+      });
+
+      return secondResponse.choices[0].message.content || 'La IA procesó las herramientas pero no devolvió una respuesta final.';
+    }
+
+    return responseMessage.content || 'La IA devolvió una respuesta vacía.';
   }
 }
 

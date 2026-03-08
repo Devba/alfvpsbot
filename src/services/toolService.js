@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import { enviarCorreo } from '../../gmail.js';
 
 import { botInstance } from '../bot/telegramBot.js';
+import * as db from '../database/database.js';
 
 const execPromise = promisify(exec);
 

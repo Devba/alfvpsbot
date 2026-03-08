@@ -22,13 +22,14 @@ export const initBot = () => {
       const conversationHistory = history.slice(0, -1);
 
       // Procesar con IA
-      const aiReply = await aiService.getChatCompletion(userId, text, conversationHistory);
+      const { content, model } = await aiService.getChatCompletion(userId, text, conversationHistory);
+      console.log(`📤 Enviando respuesta a ${chatId}: ${content?.substring(0, 50)}...`);
       
       // Guardar respuesta de la IA
-      saveMessage(userId, 'assistant', aiReply);
+      saveMessage(userId, 'assistant', content);
       
-      if (aiReply && aiReply.trim()) {
-        bot.sendMessage(chatId, aiReply);
+      if (content && content.trim()) {
+        bot.sendMessage(chatId, `🤖 **[${model}]**\n${content}`, { parse_mode: 'Markdown' });
       } else {
         console.warn('⚠️ La IA devolvió una respuesta vacía. Enviando mensaje por defecto.');
         bot.sendMessage(chatId, '✅ Entendido. He procesado tu solicitud (puedes ver más detalles en los mensajes del sistema si los hay).');

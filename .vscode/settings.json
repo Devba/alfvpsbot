@@ -1,0 +1,11 @@
+{
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "driver": "SQLite",
+            "name": "OpenGravity",
+            "database": "${workspaceFolder:vpsgrav}/opengravity.db"
+        }
+    ],
+    "sqltools.useNodeRuntime": true
+}
