@@ -215,8 +215,11 @@ class AIService {
         identityMemories.map(m => `- ${m.category}: ${m.content}`).join('\n');
     }
 
-    const systemPromptWithMemories = config.systemPrompt + identityPrompt +
-      '\n\nREGLA CRÍTICA DE MEMORIA: Si detectas información nueva que contradice o complementa tus conocimientos guardados, usa "consultar_memoria" antes de decidir si guardar o actualizar datos.';
+    const systemPromptWithMemories = config.systemPrompt + 
+      '\n\n=== CONTEXTO DE MEMORIA RELEVANTE ===\n' + 
+      (identityPrompt || 'No hay recuerdos previos de identidad.') + 
+      '\n====================================\n\n' +
+      'REGLA CRÍTICA: Usa PRIMERO el contexto de memoria de arriba antes de preguntar. Si detectas información nueva, usa "consultar_memoria" para verificar antes de guardar.';
 
     const client = this.client; // Usar siempre OpenRouter para modelos primario/especialista
 

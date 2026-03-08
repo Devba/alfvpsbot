@@ -9,6 +9,13 @@ export const initBot = () => {
   const bot = new TelegramBot(config.telegramToken, { polling: true });
   botInstance = bot;
 
+  const sanitizeMarkdown = (text) => {
+    if (!text) return '';
+    // Eliminar etiquetas tipo <tool_call> que rompen el parser
+    // No escapamos caracteres normales para evitar visual clutter (\. \: \( etc)
+    return text.replace(/<[^>]*>/g, '').trim();
+  };
+
   const processMessage = async (chatId, userId, text, fromName) => {
     try {
       // Guardar mensaje del usuario
@@ -29,10 +36,18 @@ export const initBot = () => {
       saveMessage(userId, 'assistant', content);
       
       if (content && content.trim()) {
-        bot.sendMessage(chatId, `🤖 **[${model}]**\n${content}`, { parse_mode: 'Markdown' });
+        const header = `🤖 *[${model}]*`;
+        const safeContent = sanitizeMarkdown(content);
+        // Intentar enviar con Markdown, si falla, enviar texto plano
+        try {
+          await bot.sendMessage(chatId, `${header}\n${safeContent}`, { parse_mode: 'Markdown' });
+        } catch (markdownError) {
+          console.warn('⚠️ Fallo al enviar Markdown, reintentando como texto plano:', markdownError.message);
+          await bot.sendMessage(chatId, `🤖 [${model}]\n${content}`);
+        }
       } else {
         console.warn('⚠️ La IA devolvió una respuesta vacía. Enviando mensaje por defecto.');
-        bot.sendMessage(chatId, '✅ Entendido. He procesado tu solicitud (puedes ver más detalles en los mensajes del sistema si los hay).');
+        bot.sendMessage(chatId, '✅ Entendido. He procesado tu solicitud.');
       }
     } catch (error) {
       console.error('❌ Error procesando mensaje:', error.message);
