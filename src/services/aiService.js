@@ -212,6 +212,36 @@ class AIService {
             required: ['job_id']
           }
         }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'programar_envio_correo',
+          description: 'Programa el envío de un correo electrónico para más tarde usando Gmail API. Especifica minutos o una hora exacta.',
+          parameters: {
+            type: 'object',
+            properties: {
+              destinatario: { type: 'string', description: 'Dirección de correo electrónico del destinatario.' },
+              asunto: { type: 'string', description: 'Asunto del correo.' },
+              cuerpo: { type: 'string', description: 'Cuerpo del correo (texto plano).' },
+              minutos: { type: 'number', description: 'Minutos para esperar (opcional si usas hora).' },
+              hora: { type: 'string', description: 'Hora exacta en formato HH:MM o HH:MM DD/MM/YYYY (opcional si usas minutos).' },
+              descripcion: { type: 'string', description: 'Descripción de la tarea (opcional).' }
+            },
+            required: ['destinatario', 'asunto', 'cuerpo']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'cancelar_operacion',
+          description: 'Cancela la operación actual en curso (navegación web, comando largo, etc.). Úsala cuando el usuario pida "cancela", "stop", "detén" o similar.',
+          parameters: {
+            type: 'object',
+            properties: {}
+          }
+        }
       }
     ];
   }

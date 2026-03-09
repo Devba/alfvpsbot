@@ -3,6 +3,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as db from '../database/database.js';
 import { botInstance } from '../bot/telegramBot.js';
+import { enviarCorreo } from '../../gmail.js';
 
 const execPromise = promisify(exec);
 
@@ -138,6 +139,101 @@ class SchedulerService {
     return { jobId, executionTime };
   }
 
+  // Programar envío de correo electrónico
+  scheduleEmail(chatId, minutes, to, subject, body, description = '') {
+    const executionTime = new Date(Date.now() + minutes * 60 * 1000);
+    const jobId = `email_${Date.now()}_${chatId}`;
+    
+    console.debug(`📧 [SCHEDULER] Nueva tarea de correo programada:`);
+    console.debug(`   ID: ${jobId}`);
+    console.debug(`   Para: ${to}`);
+    console.debug(`   Asunto: ${subject}`);
+    console.debug(`   Ejecución: ${executionTime.toLocaleString()} (en ${minutes} min)`);
+    
+    const timeoutId = setTimeout(async () => {
+      console.log(`⏰ [SCHEDULER] Ejecutando envío de correo: ${description || subject}`);
+      try {
+        const result = await enviarCorreo(to, subject, body);
+        
+        console.debug(`     Correo enviado, ID: ${result.id}`);
+        
+        // Marcar como ejecutada en BD (usamos tipo 'email')
+        db.markTaskAsExecuted(jobId);
+        this.scheduledJobs.delete(jobId);
+        
+        // Notificar por Telegram
+        if (botInstance) {
+          botInstance.sendMessage(chatId, `✅ Correo programado enviado:\nPara: ${to}\nAsunto: ${subject}\n\nID del mensaje: ${result.id}`);
+        }
+      } catch (error) {
+        console.error(`❌ [SCHEDULER] Error enviando correo:`, error.message);
+        db.markTaskAsExecuted(jobId);
+        this.scheduledJobs.delete(jobId);
+        
+        if (botInstance) {
+          botInstance.sendMessage(chatId, `❌ Error al enviar el correo programado:\n${error.message}`);
+        }
+      }
+    }, minutes * 60 * 1000);
+
+    this.scheduledJobs.set(jobId, timeoutId);
+    
+    // Guardar en base de datos para persistencia (tipo 'email')
+    db.saveScheduledTask(jobId, chatId, `EMAIL:${to}|${subject}|${body}`, executionTime.toISOString(), description || subject, 'email');
+    
+    console.debug(`     ✅ Tarea de correo guardada en BD y programada`);
+    
+    return { jobId, executionTime };
+  }
+
+  // Programar envío de correo a una hora específica
+  scheduleEmailAtTime(chatId, timeString, to, subject, body, description = '') {
+    const executionTime = this.parseToDate(timeString);
+    const jobId = `email_${Date.now()}_${chatId}`;
+    const delayMs = executionTime - new Date();
+    
+    if (delayMs <= 0) {
+      throw new Error('La hora especificada ya ha pasado.');
+    }
+    
+    console.debug(`📧 [SCHEDULER] Nueva tarea de correo programada (hora exacta):`);
+    console.debug(`   ID: ${jobId}`);
+    console.debug(`   Para: ${to}`);
+    console.debug(`   Asunto: ${subject}`);
+    console.debug(`   Ejecución: ${executionTime.toLocaleString()} (en ${Math.round(delayMs/1000)} segundos)`);
+    
+    const timeoutId = setTimeout(async () => {
+      console.log(`⏰ [SCHEDULER] Ejecutando envío de correo: ${description || subject}`);
+      try {
+        const result = await enviarCorreo(to, subject, body);
+        
+        console.debug(`     Correo enviado, ID: ${result.id}`);
+        
+        db.markTaskAsExecuted(jobId);
+        this.scheduledJobs.delete(jobId);
+        
+        if (botInstance) {
+          botInstance.sendMessage(chatId, `✅ Correo programado enviado:\nPara: ${to}\nAsunto: ${subject}\n\nID del mensaje: ${result.id}`);
+        }
+      } catch (error) {
+        console.error(`❌ [SCHEDULER] Error enviando correo:`, error.message);
+        db.markTaskAsExecuted(jobId);
+        this.scheduledJobs.delete(jobId);
+        
+        if (botInstance) {
+          botInstance.sendMessage(chatId, `❌ Error al enviar el correo programado:\n${error.message}`);
+        }
+      }
+    }, delayMs);
+
+    this.scheduledJobs.set(jobId, timeoutId);
+    db.saveScheduledTask(jobId, chatId, `EMAIL:${to}|${subject}|${body}`, executionTime.toISOString(), description || subject, 'email');
+    
+    console.debug(`     ✅ Tarea de correo guardada en BD y programada`);
+    
+    return { jobId, executionTime };
+  }
+
   parseToDate(timeString) {
     // Formatos soportados:
     // "HH:MM" -> hoy a esa hora (o mañana si ya pasó)
@@ -223,44 +319,85 @@ class SchedulerService {
           return;
         }
         
-        // Todas las tareas usan setTimeout (tanto delay como cron)
-        const timeoutId = setTimeout(async () => {
-          console.log(`⏰ [SCHEDULER] Ejecutando tarea programada: ${task.description}`);
-          try {
-            // Limpiar entidades HTML comunes que la IA podría enviar por error
-            let cleanCommand = task.command
-              .replace(/&amp;/g, '&')
-              .replace(/&lt;/g, '<')
-              .replace(/&gt;/g, '>')
-              .replace(/&quot;/g, '"')
-              .replace(/&#39;/g, "'");
+        // Manejar tareas según su tipo
+        if (task.type === 'email') {
+          // Formato: EMAIL:to|subject|body
+          const parts = task.command.substring(6).split('|'); // quitar 'EMAIL:'
+          if (parts.length >= 3) {
+            const [to, subject, body] = parts;
             
-            console.log(`     Comando limpio: ${cleanCommand}`);
+            const timeoutId = setTimeout(async () => {
+              console.log(`⏰ [SCHEDULER] Ejecutando envío de correo: ${task.description}`);
+              try {
+                const result = await enviarCorreo(to, subject, body);
+                
+                console.debug(`     Correo enviado, ID: ${result.id}`);
+                
+                db.markTaskAsExecuted(task.job_id);
+                this.scheduledJobs.delete(task.job_id);
+                
+                if (botInstance) {
+                  botInstance.sendMessage(task.chat_id, `✅ Correo enviado:\nPara: ${to}\nAsunto: ${subject}\n\nID: ${result.id}`);
+                }
+              } catch (error) {
+                console.error(`❌ [SCHEDULER] Error enviando correo:`, error.message);
+                db.markTaskAsExecuted(task.job_id);
+                this.scheduledJobs.delete(task.job_id);
+                
+                if (botInstance) {
+                  botInstance.sendMessage(task.chat_id, `❌ Error al enviar correo:\n${error.message}`);
+                }
+              }
+            }, delayMs);
             
-            // Escapar comillas simples para bash -c
-            const escapedCommand = cleanCommand.replace(/'/g, "'\\''");
-            // Ejecutar con bash para soporte completo de características
-            const { stdout, stderr } = await execPromise(`bash -c '${escapedCommand}'`, { timeout: 30000 });
-            const result = stdout + (stderr ? '\n' + stderr : '');
-            
-            console.log(`     Resultado: ${result.slice(0, 200)}`);
-            
+            this.scheduledJobs.set(task.job_id, timeoutId);
+            console.debug(`     ✅ Tarea de correo programada`);
+          } else {
+            console.error(`❌ [SCHEDULER] Formato de correo inválido en tarea ${task.job_id}`);
             db.markTaskAsExecuted(task.job_id);
-            this.scheduledJobs.delete(task.job_id);
-            
-            if (botInstance) {
-              botInstance.sendMessage(task.chat_id, `✅ Tarea completada:\n${task.description}\n\nResultado:\n${result.slice(0, 2000)}`);
-            }
-          } catch (error) {
-            console.error(`❌ [SCHEDULER] Error ejecutando comando:`, error.message);
-            db.markTaskAsExecuted(task.job_id);
-            this.scheduledJobs.delete(task.job_id);
-            
-            if (botInstance) {
-              botInstance.sendMessage(task.chat_id, `❌ Error al ejecutar la tarea:\n${error.message}`);
-            }
           }
-        }, delayMs);
+        } else {
+          // Tareas de comando (delay o cron)
+          const timeoutId = setTimeout(async () => {
+            console.log(`⏰ [SCHEDULER] Ejecutando tarea programada: ${task.description}`);
+            try {
+              // Limpiar entidades HTML comunes que la IA podría enviar por error
+              let cleanCommand = task.command
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&quot;/g, '"')
+                .replace(/&#39;/g, "'");
+              
+              console.debug(`     Comando limpio: ${cleanCommand}`);
+              
+              // Escapar comillas simples para bash -c
+              const escapedCommand = cleanCommand.replace(/'/g, "'\\''");
+              // Ejecutar con bash para soporte completo de características
+              const { stdout, stderr } = await execPromise(`bash -c '${escapedCommand}'`, { timeout: 30000 });
+              const result = stdout + (stderr ? '\n' + stderr : '');
+              
+              console.debug(`     Resultado: ${result.slice(0, 200)}`);
+              
+              db.markTaskAsExecuted(task.job_id);
+              this.scheduledJobs.delete(task.job_id);
+              
+              if (botInstance) {
+                botInstance.sendMessage(task.chat_id, `✅ Tarea completada:\n${task.description}\n\nResultado:\n${result.slice(0, 2000)}`);
+              }
+            } catch (error) {
+              console.error(`❌ [SCHEDULER] Error ejecutando comando:`, error.message);
+              db.markTaskAsExecuted(task.job_id);
+              this.scheduledJobs.delete(task.job_id);
+              
+              if (botInstance) {
+                botInstance.sendMessage(task.chat_id, `❌ Error al ejecutar la tarea:\n${error.message}`);
+              }
+            }
+          }, delayMs);
+          
+          this.scheduledJobs.set(task.job_id, timeoutId);
+        }
         
         this.scheduledJobs.set(task.job_id, timeoutId);
         console.log(`     ✅ Tarea programada con timeout ID: ${timeoutId}`);

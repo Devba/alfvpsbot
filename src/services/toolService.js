@@ -8,16 +8,21 @@ import { enviarCorreo } from '../../gmail.js';
 import { botInstance } from '../bot/telegramBot.js';
 import * as db from '../database/database.js';
 import { schedulerService } from './schedulerService.js';
+import { cancelService } from './cancelService.js';
 
 const execPromise = promisify(exec);
 
 export const toolService = {
   async ejecutar_comando({ comando }, context) {
+    const userId = context?.userId;
     try {
       console.log(`💻 Iniciando comando en background: ${comando}`);
       
       const child = exec(comando);
       const pid = child.pid;
+      
+      // Registrar el proceso para posible cancelación
+      cancelService.registerCommand(userId, child);
       
       // Enviar resultado asíncronamente
       let output = '';
@@ -29,8 +34,8 @@ export const toolService = {
         try {
           console.warn(`⏳ [TIMEOUT] Matando comando ${pid}: ${comando}`);
           process.kill(pid, 'SIGKILL');
-          if (botInstance && context?.userId) {
-            botInstance.sendMessage(context.userId, `❌ [TIMEOUT] El comando (PID: ${pid}) excedió los 5 minutos y fue abortado.\n\nÚltima salida:\n${output.slice(-1500)}`);
+          if (botInstance && userId) {
+            botInstance.sendMessage(userId, `❌ [TIMEOUT] El comando (PID: ${pid}) excedió los 5 minutos y fue abortado.\n\nÚltima salida:\n${output.slice(-1500)}`);
           }
         } catch (e) {
           console.error(`Error matando proceso ${pid}:`, e);
@@ -39,6 +44,8 @@ export const toolService = {
 
       child.on('close', (code) => {
         clearTimeout(timeoutId);
+        cancelService.unregisterOperation(userId);
+        
         let finalMessage = `✅ [FIN] Comando finalizado (PID: ${pid}, código: ${code})\n\n`;
         if (code !== 0 && code !== null) {
           finalMessage = `⚠️ [FIN] Comando terminó con error (PID: ${pid}, código: ${code})\n\n`;
@@ -46,13 +53,14 @@ export const toolService = {
         
         finalMessage += output ? output.slice(-2000) : 'Comando ejecutado sin salida.';
         
-        if (botInstance && context?.userId) {
-          botInstance.sendMessage(context.userId, finalMessage).catch(console.error);
+        if (botInstance && userId) {
+          botInstance.sendMessage(userId, finalMessage).catch(console.error);
         }
       });
 
       return `🚀 Comando recibido y ejecutándose en segundo plano (PID: ${pid})... Se te notificará el resultado por Telegram cuando termine de forma silenciosa. Si es un proceso persistente, quedará en background.`;
     } catch (error) {
+      cancelService.unregisterOperation(userId);
       return `❌ Error al iniciar comando: ${error.message}`;
     }
   },
@@ -96,7 +104,8 @@ export const toolService = {
     }
   },
 
-  async ejecutar_script({ lenguaje, codigo }) {
+  async ejecutar_script({ lenguaje, codigo }, context) {
+    const userId = context?.userId;
     const sandboxDir = path.resolve('sandbox');
     const fileName = `script_${Date.now()}.${lenguaje === 'javascript' ? 'js' : 'py'}`;
     const filePath = path.join(sandboxDir, fileName);
@@ -110,14 +119,52 @@ export const toolService = {
       await fs.writeFile(filePath, codigo, 'utf-8');
 
       console.log(`🧪 [SANDBOX] Ejecutando script ${lenguaje} (${fileName})...`);
-
-      // Ejecutar con timeout de 30 segundos
-      const { stdout, stderr } = await execPromise(execCmd, { timeout: 30000 });
+      
+      // Ejecutar con child_process.exec para poder cancelar
+      const child = exec(execCmd);
+      const pid = child.pid;
+      
+      // Registrar para cancelación
+      cancelService.registerCommand(userId, child);
+      
+      let stdout = '';
+      let stderr = '';
+      
+      child.stdout.on('data', (data) => { stdout += data; });
+      child.stderr.on('data', (data) => { stderr += data; });
+      
+      const timeoutMs = 30000; // 30 segundos
+      const timeoutId = setTimeout(() => {
+        try {
+          console.warn(`⏳ [SANDBOX TIMEOUT] Matando script ${pid}`);
+          process.kill(pid, 'SIGKILL');
+        } catch (e) {
+          console.error('Error matando script:', e.message);
+        }
+      }, timeoutMs);
+      
+      // Esperar a que termine
+      await new Promise((resolve, reject) => {
+        child.on('close', (code) => {
+          clearTimeout(timeoutId);
+          cancelService.unregisterOperation(userId);
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`Script terminó con código ${code}: ${stderr}`));
+          }
+        });
+        child.on('error', (err) => {
+          clearTimeout(timeoutId);
+          cancelService.unregisterOperation(userId);
+          reject(err);
+        });
+      });
       
       return `✅ [SANDBOX] Resultado:\n${stdout}${stderr ? '\nErrores:\n' + stderr : ''}`;
     } catch (error) {
-      if (error.killed) {
-        return `❌ [SANDBOX] Error: La ejecución excedió el límite de 30 segundos.`;
+      if (error.message.includes('SIGKILL') || error.message.includes('terminó con código')) {
+        return `❌ [SANDBOX] Error: ${error.message}`;
       }
       return `❌ [SANDBOX] Error de ejecución:\n${error.message}`;
     } finally {
@@ -132,8 +179,15 @@ export const toolService = {
 
   async navegar_web({ url, accion }, context) {
     let browser;
+    const userId = context?.userId;
     try {
       console.log(`🌐 [WEB] Navegando a ${url} (Acción: ${accion})...`);
+      
+      // Verificar cancelación antes de iniciar
+      if (cancelService.isCancelled(userId)) {
+        return '❌ [WEB] Navegación cancelada por el usuario.';
+      }
+      
       browser = await puppeteer.launch({
         args: [
           '--no-sandbox', 
@@ -141,6 +195,9 @@ export const toolService = {
           '--disable-blink-features=AutomationControlled'
         ]
       });
+
+      // Registrar la navegación activa para este usuario
+      cancelService.registerNavigation(userId, browser);
 
       const page = await browser.newPage();
       
@@ -187,6 +244,9 @@ export const toolService = {
       return msg;
     } finally {
       if (browser) await browser.close();
+      // Desregistrar la operación y resetear estado
+      cancelService.unregisterOperation(userId);
+      cancelService.reset();
     }
   },
 
@@ -326,6 +386,71 @@ export const toolService = {
     } catch (error) {
       console.error(`❌ [TOOL] Error al cancelar tarea:`, error.message);
       return `❌ Error al cancelar tarea: ${error.message}`;
+    }
+  },
+
+  async cancelar_operacion(_, context) {
+    try {
+      console.log(`🛑 [CANCEL] Operación cancelada por usuario ${context?.userId}`);
+      cancelService.requestCancel();
+      
+      // Esperar un momento para que la cancelación se procese
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      return '✅ Operación cancelada. Si hay una navegación en curso, se ha detenido.';
+    } catch (error) {
+      console.error(`❌ [CANCEL] Error al cancelar:`, error.message);
+      return `❌ Error al cancelar: ${error.message}`;
+    }
+  },
+
+  // --- Herramienta de Programación de Correos ---
+
+  async programar_envio_correo({ destinatario, asunto, cuerpo, minutos, hora, descripcion }, context) {
+    try {
+      console.debug(`🔧 [TOOL] programar_envio_correo llamado:`);
+      console.debug(`   destinatario: ${destinatario}`);
+      console.debug(`   asunto: ${asunto}`);
+      console.debug(`   minutos: ${minutos}`);
+      console.debug(`   hora: ${hora}`);
+      console.debug(`   context.userId: ${context?.userId}`);
+      
+      if (!destinatario || !asunto || !cuerpo) {
+        return '❌ Debes proporcionar destinatario, asunto y cuerpo del correo.';
+      }
+      
+      let result;
+      if (minutos) {
+        if (typeof minutos !== 'number' || minutos <= 0) {
+          return '❌ El parámetro "minutos" debe ser un número positivo.';
+        }
+        result = schedulerService.scheduleEmail(
+          context.userId,
+          minutos,
+          destinatario,
+          asunto,
+          cuerpo,
+          descripcion || `Correo a ${destinatario}`
+        );
+        return `✅ Correo programado para enviar en ${minutos} minuto(s) a ${destinatario}.\nID: ${result.jobId}\nAsunto: ${asunto}`;
+      } 
+      else if (hora) {
+        result = schedulerService.scheduleEmailAtTime(
+          context.userId,
+          hora,
+          destinatario,
+          asunto,
+          cuerpo,
+          descripcion || `Correo a ${destinatario}`
+        );
+        return `✅ Correo programado para enviar a ${hora} a ${destinatario}.\nID: ${result.jobId}\nAsunto: ${asunto}`;
+      } 
+      else {
+        return '❌ Debes especificar "minutos" o "hora". Ejemplos:\n- minutos: 5\n- hora: "14:30" o "14:30 15/03/2026"';
+      }
+    } catch (error) {
+      console.error(`❌ [TOOL] Error al programar envío de correo:`, error.message);
+      return `❌ Error al programar envío de correo: ${error.message}`;
     }
   }
 };
