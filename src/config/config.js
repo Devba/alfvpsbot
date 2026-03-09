@@ -5,7 +5,7 @@ export const config = {
   aiApiKey: process.env.GROQ_KEY?.trim(),
   aiBaseUrl: (process.env.GROQ_URL || 'https://api.groq.com/openai/v1').trim(),
   primaryModel: (process.env.PRIMARY_MODEL || 'stepfun/step-3.5-flash:free').trim(),
-  specialistModel: (process.env.SPECIALIST_MODEL || 'minimax/minimax-01').trim(),
+  specialistModel: (process.env.SPECIALIST_MODEL || 'meta-llama/llama-3.3-70b-instruct').trim(),
   backupModel: (process.env.BACKUP_MODEL || 'x-ai/grok-4.1-fast').trim(),
   openRouterKey: process.env.OPENROUTER_KEY?.trim(),
   openRouterUrl: (process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1').trim(),

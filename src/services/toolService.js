@@ -7,6 +7,7 @@ import { enviarCorreo } from '../../gmail.js';
 
 import { botInstance } from '../bot/telegramBot.js';
 import * as db from '../database/database.js';
+import { schedulerService } from './schedulerService.js';
 
 const execPromise = promisify(exec);
 
@@ -229,12 +230,85 @@ export const toolService = {
     try {
       const result = db.deleteMemory(id);
       if (result.changes > 0) {
-        return `🗑️ Memoria con ID \${id} eliminada correctamente.`;
+        return `🗑️ Memoria con ID ${id} eliminada correctamente.`;
       } else {
-        return `⚠️ No se encontró ninguna memoria con el ID \${id}.`;
+        return `⚠️ No se encontró ninguna memoria con el ID ${id}.`;
       }
     } catch (error) {
-      return `❌ Error al eliminar memoria: \${error.message}`;
+      return `❌ Error al eliminar memoria: ${error.message}`;
+    }
+  },
+
+  // --- Herramienta de Programación de Tareas ---
+
+  async programar_tarea({ comando, minutos, hora, descripcion }, context) {
+    try {
+      let result;
+      if (minutos) {
+        // Programar en X minutos
+        if (typeof minutos !== 'number' || minutos <= 0) {
+          return '❌ El parámetro "minutos" debe ser un número positivo.';
+        }
+        result = schedulerService.scheduleInMinutes(
+          context.userId, 
+          minutos, 
+          comando, 
+          descripcion || `Comando: ${comando}`
+        );
+        return `✅ Tarea programada para dentro de ${minutos} minuto(s).\nID: ${result.jobId}\nEjecución: ${result.executionTime.toLocaleString()}`;
+      } 
+      else if (hora) {
+        // Programar a hora específica
+        result = schedulerService.scheduleAtTime(
+          context.userId, 
+          hora, 
+          comando, 
+          descripcion || `Comando: ${comando}`
+        );
+        return `✅ Tarea programada para ${hora}.\nID: ${result.jobId}\nExpresión cron: ${result.cronExpression}`;
+      } 
+      else {
+        return '❌ Debes especificar "minutos" o "hora". Ejemplos:\n- minutos: 5\n- hora: "14:30" o "14:30 15/03/2026"';
+      }
+    } catch (error) {
+      return `❌ Error al programar tarea: ${error.message}`;
+    }
+  },
+
+  async listar_tareas_programadas(_, context) {
+    try {
+      const tasks = schedulerService.getActiveTasksForChat(context.userId);
+      
+      if (tasks.length === 0) {
+        return '📋 No hay tareas programadas pendientes.';
+      }
+      
+      let response = `📋 Tareas programadas (${tasks.length}):\n\n`;
+      tasks.forEach((task, index) => {
+        const fecha = new Date(task.execution_time).toLocaleString();
+        response += `${index + 1}. ID: ${task.job_id}\n`;
+        response += `   Comando: ${task.command}\n`;
+        response += `   Descripción: ${task.description || 'Sin descripción'}\n`;
+        response += `   Ejecución: ${fecha}\n`;
+        response += `   Tipo: ${task.type}\n\n`;
+      });
+      return response;
+    } catch (error) {
+      return `❌ Error al listar tareas: ${error.message}`;
+    }
+  },
+
+  async cancelar_tarea({ job_id }, context) {
+    try {
+      const success = schedulerService.cancelJob(job_id);
+      
+      if (success) {
+        return `✅ Tarea ${job_id} cancelada correctamente.`;
+      } else {
+        return `⚠️ No se encontró la tarea con ID ${job_id}.`;
+      }
+    } catch (error) {
+      return `❌ Error al cancelar tarea: ${error.message}`;
     }
   }
 };

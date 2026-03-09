@@ -170,6 +170,48 @@ class AIService {
             required: ['id']
           }
         }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'programar_tarea',
+          description: 'Programa la ejecución de un comando del sistema para más tarde. Puedes especificar minutos (ej: 5) o una hora exacta (ej: "14:30" o "14:30 15/03/2026").',
+          parameters: {
+            type: 'object',
+            properties: {
+              comando: { type: 'string', description: 'El comando de shell a ejecutar.' },
+              minutos: { type: 'number', description: 'Minutos para esperar (opcional si usas hora).' },
+              hora: { type: 'string', description: 'Hora exacta en formato HH:MM o HH:MM DD/MM/YYYY (opcional si usas minutos).' },
+              descripcion: { type: 'string', description: 'Descripción de la tarea (opcional).' }
+            },
+            required: ['comando']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'listar_tareas_programadas',
+          description: 'Lista todas las tareas programadas pendientes para el usuario actual.',
+          parameters: {
+            type: 'object',
+            properties: {}
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'cancelar_tarea',
+          description: 'Cancela una tarea programada por su ID.',
+          parameters: {
+            type: 'object',
+            properties: {
+              job_id: { type: 'string', description: 'ID de la tarea a cancelar.' }
+            },
+            required: ['job_id']
+          }
+        }
       }
     ];
   }
@@ -187,7 +229,7 @@ class AIService {
 
   async getChatCompletion(userId, userMessage, history = []) {
     // 🧠 Determinación de Modelo
-    let selectedModel = '@preset/open-gravity-primary';
+    let selectedModel = config.primaryModel; // Usar directamente el modelo configurado (stepfun/step-3.5-flash:free)
     let finalMessage = userMessage;
 
     // Filtros de ruteo
@@ -202,9 +244,9 @@ class AIService {
       finalMessage = userMessage.replace(grokPrefixRegex, '').trim();
       console.log(`🎯 [Router] Forzando Grok por prefijo flexible.`);
     } else if (isVisionTask) {
-      selectedModel = config.primaryModel; // Grok-3 soporta visión (ahora Gemma 3 también, pero preferimos el primario)
+      selectedModel = config.primaryModel; // StepFun soporta visión
     } else if (isLongGeneration) {
-      selectedModel = config.specialistModel; // Minimax para salida larga
+      selectedModel = config.specialistModel; // Usar especialista para textos largos (debe soportar herramientas)
     }
 
     // 🧠 Inyección de Identidad (Skill 6)
@@ -334,12 +376,15 @@ class AIService {
         }
       }
 
-      const secondResponse = await client.chat.completions.create({
+      // Llamada recursiva para manejar múltiples rondas de herramientas
+      const nextResponse = await client.chat.completions.create({
         model: model,
-        messages: messages
+        messages: messages,
+        tools: this.tools,
+        tool_choice: 'auto'
       });
 
-      return secondResponse.choices[0].message.content || 'La IA procesó las herramientas pero no devolvió una respuesta final.';
+      return this._processResponse(client, model, messages, nextResponse, userId);
     }
 
     return responseMessage.content || 'La IA devolvió una respuesta vacía.';
