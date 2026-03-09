@@ -9,6 +9,7 @@ const execPromise = promisify(exec);
 class SchedulerService {
   constructor() {
     this.scheduledJobs = new Map();
+    console.log('📦 [SCHEDULER] Instancia de SchedulerService creada');
   }
 
   // Programar comando para ejecutar en X minutos
@@ -16,11 +17,33 @@ class SchedulerService {
     const executionTime = new Date(Date.now() + minutes * 60 * 1000);
     const jobId = `job_${Date.now()}_${chatId}`;
     
+    console.log(`📅 [SCHEDULER] Nueva tarea programada:`);
+    console.log(`   ID: ${jobId}`);
+    console.log(`   Chat: ${chatId}`);
+    console.log(`   Descripción: ${description}`);
+    console.log(`   Comando: ${command}`);
+    console.log(`   Ejecución: ${executionTime.toLocaleString()} (en ${minutes} min)`);
+    
     const timeoutId = setTimeout(async () => {
       console.log(`⏰ [SCHEDULER] Ejecutando tarea programada: ${description}`);
       try {
-        const { stdout, stderr } = await execPromise(command, { timeout: 30000 });
+        // Limpiar entidades HTML comunes que la IA podría enviar por error
+        let cleanCommand = command
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'");
+        
+        console.log(`     Comando limpio: ${cleanCommand}`);
+        
+        // Escapar comillas simples para bash -c
+        const escapedCommand = cleanCommand.replace(/'/g, "'\\''");
+        // Ejecutar con bash para soporte completo de características
+        const { stdout, stderr } = await execPromise(`bash -c '${escapedCommand}'`, { timeout: 30000 });
         const result = stdout + (stderr ? '\n' + stderr : '');
+        
+        console.log(`     Resultado: ${result.slice(0, 200)}`);
         
         // Marcar como ejecutada en BD
         db.markTaskAsExecuted(jobId);
@@ -46,6 +69,8 @@ class SchedulerService {
     // Guardar en base de datos para persistencia
     db.saveScheduledTask(jobId, chatId, command, executionTime.toISOString(), description, 'delay');
     
+    console.log(`     ✅ Tarea guardada en BD y programada con timeout ID: ${timeoutId}`);
+    
     return { jobId, executionTime };
   }
 
@@ -59,11 +84,33 @@ class SchedulerService {
       throw new Error('La hora especificada ya ha pasado.');
     }
     
+    console.log(`📅 [SCHEDULER] Nueva tarea programada (hora exacta):`);
+    console.log(`   ID: ${jobId}`);
+    console.log(`   Chat: ${chatId}`);
+    console.log(`   Descripción: ${description}`);
+    console.log(`   Comando: ${command}`);
+    console.log(`   Ejecución: ${executionTime.toLocaleString()} (en ${Math.round(delayMs/1000)} segundos)`);
+    
     const timeoutId = setTimeout(async () => {
       console.log(`⏰ [SCHEDULER] Ejecutando tarea programada: ${description}`);
       try {
-        const { stdout, stderr } = await execPromise(command, { timeout: 30000 });
+        // Limpiar entidades HTML comunes que la IA podría enviar por error
+        let cleanCommand = command
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'");
+        
+        console.log(`     Comando limpio: ${cleanCommand}`);
+        
+        // Escapar comillas simples para bash -c
+        const escapedCommand = cleanCommand.replace(/'/g, "'\\''");
+        // Ejecutar con bash para soporte completo de características
+        const { stdout, stderr } = await execPromise(`bash -c '${escapedCommand}'`, { timeout: 30000 });
         const result = stdout + (stderr ? '\n' + stderr : '');
+        
+        console.log(`     Resultado: ${result.slice(0, 200)}`);
         
         // Marcar como ejecutada en BD
         db.markTaskAsExecuted(jobId);
@@ -85,6 +132,8 @@ class SchedulerService {
 
     this.scheduledJobs.set(jobId, timeoutId);
     db.saveScheduledTask(jobId, chatId, command, executionTime.toISOString(), description, 'cron');
+    
+    console.log(`     ✅ Tarea guardada en BD y programada con timeout ID: ${timeoutId}`);
     
     return { jobId, executionTime };
   }
@@ -145,7 +194,9 @@ class SchedulerService {
 
   // Obtener todas las tareas activas de un chat
   getActiveTasksForChat(chatId) {
-    return db.getAllActiveTasks(chatId);
+    const tasks = db.getAllActiveTasks(chatId);
+    console.log(`📊 [SCHEDULER] getActiveTasksForChat(${chatId}): ${tasks.length} tareas`);
+    return tasks;
   }
 
   // Cargar tareas pendientes desde la base de datos al iniciar
@@ -155,12 +206,19 @@ class SchedulerService {
     
     tasks.forEach(task => {
       try {
+        console.log(`  📌 Tarea ${task.job_id}: ${task.description}`);
+        console.log(`     Comando: ${task.command}`);
+        console.log(`     Ejecución: ${task.execution_time}`);
+        
         const executionTime = new Date(task.execution_time);
         const now = new Date();
         const delayMs = executionTime - now;
         
+        console.log(`     Delay: ${delayMs}ms (${Math.round(delayMs/1000)} segundos)`);
+        
         if (delayMs <= 0) {
           // La tarea ya pasó, marcarla como ejecutada
+          console.log(`     ⚠️ Tarea ya vencida, marcando como ejecutada`);
           db.markTaskAsExecuted(task.job_id);
           return;
         }
@@ -169,8 +227,23 @@ class SchedulerService {
         const timeoutId = setTimeout(async () => {
           console.log(`⏰ [SCHEDULER] Ejecutando tarea programada: ${task.description}`);
           try {
-            const { stdout, stderr } = await execPromise(task.command, { timeout: 30000 });
+            // Limpiar entidades HTML comunes que la IA podría enviar por error
+            let cleanCommand = task.command
+              .replace(/&amp;/g, '&')
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/&quot;/g, '"')
+              .replace(/&#39;/g, "'");
+            
+            console.log(`     Comando limpio: ${cleanCommand}`);
+            
+            // Escapar comillas simples para bash -c
+            const escapedCommand = cleanCommand.replace(/'/g, "'\\''");
+            // Ejecutar con bash para soporte completo de características
+            const { stdout, stderr } = await execPromise(`bash -c '${escapedCommand}'`, { timeout: 30000 });
             const result = stdout + (stderr ? '\n' + stderr : '');
+            
+            console.log(`     Resultado: ${result.slice(0, 200)}`);
             
             db.markTaskAsExecuted(task.job_id);
             this.scheduledJobs.delete(task.job_id);
@@ -190,6 +263,7 @@ class SchedulerService {
         }, delayMs);
         
         this.scheduledJobs.set(task.job_id, timeoutId);
+        console.log(`     ✅ Tarea programada con timeout ID: ${timeoutId}`);
         
       } catch (error) {
         console.error(`❌ [SCHEDULER] Error al cargar tarea ${task.job_id}:`, error.message);

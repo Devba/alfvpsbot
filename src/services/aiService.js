@@ -175,11 +175,11 @@ class AIService {
         type: 'function',
         function: {
           name: 'programar_tarea',
-          description: 'Programa la ejecución de un comando del sistema para más tarde. Puedes especificar minutos (ej: 5) o una hora exacta (ej: "14:30" o "14:30 15/03/2026").',
+          description: 'Programa la ejecución de un comando del sistema para más tarde. IMPORTANTE: El campo "comando" debe ser una cadena de texto plano con el comando exacto a ejecutar en bash. NO uses entidades HTML ni escapes especiales. Usa && para encadenar comandos, $(comando) para substitución, comillas dobles o simples normalmente. Ejemplos correctos: "date", "echo hola && ls -la", "free -h && df -h".',
           parameters: {
             type: 'object',
             properties: {
-              comando: { type: 'string', description: 'El comando de shell a ejecutar.' },
+              comando: { type: 'string', description: 'El comando de shell a ejecutar (texto plano, sin escapes HTML).' },
               minutos: { type: 'number', description: 'Minutos para esperar (opcional si usas hora).' },
               hora: { type: 'string', description: 'Hora exacta en formato HH:MM o HH:MM DD/MM/YYYY (opcional si usas minutos).' },
               descripcion: { type: 'string', description: 'Descripción de la tarea (opcional).' }
