@@ -243,12 +243,12 @@ export const toolService = {
 
   async programar_tarea({ comando, minutos, hora, descripcion }, context) {
     try {
-      console.log(`🔧 [TOOL] programar_tarea llamado:`);
-      console.log(`   comando: ${comando}`);
-      console.log(`   minutos: ${minutos}`);
-      console.log(`   hora: ${hora}`);
-      console.log(`   descripcion: ${descripcion}`);
-      console.log(`   context.userId: ${context?.userId}`);
+      console.debug(`🔧 [TOOL] programar_tarea llamado:`);
+      console.debug(`   comando: ${comando}`);
+      console.debug(`   minutos: ${minutos}`);
+      console.debug(`   hora: ${hora}`);
+      console.debug(`   descripcion: ${descripcion}`);
+      console.debug(`   context.userId: ${context?.userId}`);
       
       let result;
       if (minutos) {
@@ -262,7 +262,7 @@ export const toolService = {
           comando, 
           descripcion || `Comando: ${comando}`
         );
-        console.log(`✅ [TOOL] Tarea programada, resultado:`, result);
+        console.debug(`✅ [TOOL] Tarea programada, resultado:`, result);
         return `✅ Tarea programada para dentro de ${minutos} minuto(s).\nID: ${result.jobId}\nEjecución: ${result.executionTime.toLocaleString()}`;
       } 
       else if (hora) {
@@ -273,7 +273,7 @@ export const toolService = {
           comando, 
           descripcion || `Comando: ${comando}`
         );
-        console.log(`✅ [TOOL] Tarea programada (hora), resultado:`, result);
+        console.debug(`✅ [TOOL] Tarea programada (hora), resultado:`, result);
         return `✅ Tarea programada para ${hora}.\nID: ${result.jobId}\nExpresión cron: ${result.cronExpression}`;
       } 
       else {
@@ -287,9 +287,9 @@ export const toolService = {
 
   async listar_tareas_programadas(_, context) {
     try {
-      console.log(`🔧 [TOOL] listar_tareas_programadas llamado para userId: ${context?.userId}`);
+      console.debug(`🔧 [TOOL] listar_tareas_programadas llamado para userId: ${context?.userId}`);
       const tasks = schedulerService.getActiveTasksForChat(context.userId);
-      console.log(`   Tareas encontradas: ${tasks.length}`);
+      console.debug(`   Tareas encontradas: ${tasks.length}`);
       
       if (tasks.length === 0) {
         return '📋 No hay tareas programadas pendientes.';
@@ -313,11 +313,11 @@ export const toolService = {
 
   async cancelar_tarea({ job_id }, context) {
     try {
-      console.log(`🔧 [TOOL] cancelar_tarea llamado para job_id: ${job_id}`);
+      console.debug(`🔧 [TOOL] cancelar_tarea llamado para job_id: ${job_id}`);
       const success = schedulerService.cancelJob(job_id);
       
       if (success) {
-        console.log(`✅ [TOOL] Tarea ${job_id} cancelada correctamente.`);
+        console.debug(`✅ [TOOL] Tarea ${job_id} cancelada correctamente.`);
         return `✅ Tarea ${job_id} cancelada correctamente.`;
       } else {
         console.warn(`⚠️ [TOOL] No se encontró la tarea con ID ${job_id}.`);

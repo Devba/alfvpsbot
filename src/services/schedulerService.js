@@ -9,7 +9,7 @@ const execPromise = promisify(exec);
 class SchedulerService {
   constructor() {
     this.scheduledJobs = new Map();
-    console.log('📦 [SCHEDULER] Instancia de SchedulerService creada');
+    console.debug('📦 [SCHEDULER] Instancia de SchedulerService creada');
   }
 
   // Programar comando para ejecutar en X minutos
@@ -17,12 +17,12 @@ class SchedulerService {
     const executionTime = new Date(Date.now() + minutes * 60 * 1000);
     const jobId = `job_${Date.now()}_${chatId}`;
     
-    console.log(`📅 [SCHEDULER] Nueva tarea programada:`);
-    console.log(`   ID: ${jobId}`);
-    console.log(`   Chat: ${chatId}`);
-    console.log(`   Descripción: ${description}`);
-    console.log(`   Comando: ${command}`);
-    console.log(`   Ejecución: ${executionTime.toLocaleString()} (en ${minutes} min)`);
+    console.debug(`📅 [SCHEDULER] Nueva tarea programada:`);
+    console.debug(`   ID: ${jobId}`);
+    console.debug(`   Chat: ${chatId}`);
+    console.debug(`   Descripción: ${description}`);
+    console.debug(`   Comando: ${command}`);
+    console.debug(`   Ejecución: ${executionTime.toLocaleString()} (en ${minutes} min)`);
     
     const timeoutId = setTimeout(async () => {
       console.log(`⏰ [SCHEDULER] Ejecutando tarea programada: ${description}`);
@@ -35,7 +35,7 @@ class SchedulerService {
           .replace(/&quot;/g, '"')
           .replace(/&#39;/g, "'");
         
-        console.log(`     Comando limpio: ${cleanCommand}`);
+        console.debug(`     Comando limpio: ${cleanCommand}`);
         
         // Escapar comillas simples para bash -c
         const escapedCommand = cleanCommand.replace(/'/g, "'\\''");
@@ -43,7 +43,7 @@ class SchedulerService {
         const { stdout, stderr } = await execPromise(`bash -c '${escapedCommand}'`, { timeout: 30000 });
         const result = stdout + (stderr ? '\n' + stderr : '');
         
-        console.log(`     Resultado: ${result.slice(0, 200)}`);
+        console.debug(`     Resultado: ${result.slice(0, 200)}`);
         
         // Marcar como ejecutada en BD
         db.markTaskAsExecuted(jobId);
@@ -69,7 +69,7 @@ class SchedulerService {
     // Guardar en base de datos para persistencia
     db.saveScheduledTask(jobId, chatId, command, executionTime.toISOString(), description, 'delay');
     
-    console.log(`     ✅ Tarea guardada en BD y programada con timeout ID: ${timeoutId}`);
+    console.debug(`     ✅ Tarea guardada en BD y programada con timeout ID: ${timeoutId}`);
     
     return { jobId, executionTime };
   }
@@ -84,12 +84,12 @@ class SchedulerService {
       throw new Error('La hora especificada ya ha pasado.');
     }
     
-    console.log(`📅 [SCHEDULER] Nueva tarea programada (hora exacta):`);
-    console.log(`   ID: ${jobId}`);
-    console.log(`   Chat: ${chatId}`);
-    console.log(`   Descripción: ${description}`);
-    console.log(`   Comando: ${command}`);
-    console.log(`   Ejecución: ${executionTime.toLocaleString()} (en ${Math.round(delayMs/1000)} segundos)`);
+    console.debug(`📅 [SCHEDULER] Nueva tarea programada (hora exacta):`);
+    console.debug(`   ID: ${jobId}`);
+    console.debug(`   Chat: ${chatId}`);
+    console.debug(`   Descripción: ${description}`);
+    console.debug(`   Comando: ${command}`);
+    console.debug(`   Ejecución: ${executionTime.toLocaleString()} (en ${Math.round(delayMs/1000)} segundos)`);
     
     const timeoutId = setTimeout(async () => {
       console.log(`⏰ [SCHEDULER] Ejecutando tarea programada: ${description}`);
@@ -133,7 +133,7 @@ class SchedulerService {
     this.scheduledJobs.set(jobId, timeoutId);
     db.saveScheduledTask(jobId, chatId, command, executionTime.toISOString(), description, 'cron');
     
-    console.log(`     ✅ Tarea guardada en BD y programada con timeout ID: ${timeoutId}`);
+    console.debug(`     ✅ Tarea guardada en BD y programada con timeout ID: ${timeoutId}`);
     
     return { jobId, executionTime };
   }
@@ -195,26 +195,26 @@ class SchedulerService {
   // Obtener todas las tareas activas de un chat
   getActiveTasksForChat(chatId) {
     const tasks = db.getAllActiveTasks(chatId);
-    console.log(`📊 [SCHEDULER] getActiveTasksForChat(${chatId}): ${tasks.length} tareas`);
+    console.debug(`📊 [SCHEDULER] getActiveTasksForChat(${chatId}): ${tasks.length} tareas`);
     return tasks;
   }
 
   // Cargar tareas pendientes desde la base de datos al iniciar
   loadPendingTasks() {
     const tasks = db.getAllActiveTasks();
-    console.log(`📋 [SCHEDULER] Cargando ${tasks.length} tareas pendientes desde la base de datos...`);
+    console.debug(`📋 [SCHEDULER] Cargando ${tasks.length} tareas pendientes desde la base de datos...`);
     
     tasks.forEach(task => {
       try {
-        console.log(`  📌 Tarea ${task.job_id}: ${task.description}`);
-        console.log(`     Comando: ${task.command}`);
-        console.log(`     Ejecución: ${task.execution_time}`);
+        console.debug(`  📌 Tarea ${task.job_id}: ${task.description}`);
+        console.debug(`     Comando: ${task.command}`);
+        console.debug(`     Ejecución: ${task.execution_time}`);
         
         const executionTime = new Date(task.execution_time);
         const now = new Date();
         const delayMs = executionTime - now;
         
-        console.log(`     Delay: ${delayMs}ms (${Math.round(delayMs/1000)} segundos)`);
+        console.debug(`     Delay: ${delayMs}ms (${Math.round(delayMs/1000)} segundos)`);
         
         if (delayMs <= 0) {
           // La tarea ya pasó, marcarla como ejecutada
